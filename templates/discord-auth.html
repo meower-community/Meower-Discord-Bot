@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>meower</title>
+    <link rel="shortcut icon" href="https://meower.org/assets/77336943.png" type="image/x-icon">
+    <link href="style.css" rel="stylesheet" type="text/css" />
+  </head>
+  <body>
+    <script type="module">
+        window.EventEmitter = class EventEmitter {
+            constructor() {
+                this.callbacks = {}
+            }
+        
+            on(event, cb) {
+                if (!this.callbacks[event]) this.callbacks[event] = [];
+                this.callbacks[event].push(cb)
+            }
+        
+            emit(event, data) {
+                let cbs = this.callbacks[event]
+                if (cbs) {
+                    cbs.forEach(cb => cb(data))
+                }
+            }
+        }
+        class CloudlinkJS {
+            constructor(server) {
+            var ws = new WebSocket(server);
+            var events = new EventEmitter()
+            this.events = events
+            this.ws = ws
+        
+            ws.onopen = function () {
+                events.emit('opened');
+            };
+        
+            ws.onmessage = function (e) {
+                let data = JSON.parse(e.data)
+                events.emit('data', data);
+            }
+        
+            ws.onclose = function () {
+                events.emit('closed');
+            };
+        
+            ws.onerror = function (e) {
+                events.emit('error', e);
+            };
+            }
+            send(data) {
+                this.ws.send(JSON.stringify(data))
+            }
+            on(event, cb) {
+                return this.events.on(event, cb);
+            }
+            disconnect() {
+                this.ws.close()
+            }
+        }
+        async function fetchText(URL) {
+            let response = await fetch(URL);
+            let data = await response.text();
+            return data
+        }
+        var ip = await fetchText('https://api.meower.org/ip');
+        window.ip = ip;
+        var cljs = new CloudlinkJS('wss://server.meower.org');
+        window.cljs = cljs;
+        cljs.on("data", (data) => {
+            if (String(data.val).startsWith("E:")) {
+                if (data.val != "E:102 | Datatype") {
+                    document.getElementById("main-content").style.display = "none";
+                    document.getElementById("error-content").style.display = "block";
+                    document.getElementById("error-details").innerText = `CloudLink Error: ${data.val} - Please refresh to try again`;
+                    cljs.ws.close();
+                }
+            }
+            if (data.val == "I:011 | Invalid Password") {
+                document.getElementById("main-content").style.display = "none";
+                document.getElementById("error-content").style.display = "block";
+                document.getElementById("error-details").innerText = "Invalid Meower account password - Please refresh to try again"
+                cljs.ws.close()
+            }
+            if (data.cmd == "ulist") {
+                if (data.val.includes("DiscordAuth")) {
+                    console.log("Authentication bot is online.")
+                } else {
+                    document.getElementById("main-content").style.display = "none";
+                    document.getElementById("error-content").style.display = "block";
+                    document.getElementById("error-details").innerText = "Authentication bot is offline - Please alert Tnix about this"
+                    cljs.ws.close()
+                }
+            }
+            if (data.cmd == "pmsg") {
+                if (data.origin == "DiscordAuth") {
+                    document.getElementById("login-button").innerText = "Verifying...";
+                    const queryString = window.location.search;
+                    const urlParams = new URLSearchParams(queryString);
+                    const discord_id = urlParams.get('id')
+                    window.location.replace(`https://mobile.meower.org/discord-verify?id=${discord_id}&token=${data.val}`);
+                }
+            }
+            if (data.val.mode == "auth") {
+                document.getElementById("login-button").innerText = "Contacting bot...";
+                cljs.send({cmd: "pmsg", id: "DiscordAuth", val: "auth"})
+            }
+            console.log(String(JSON.stringify(data)));
+        });
+        cljs.on("opened", () => {
+            console.log(String(JSON.stringify({cmd: "internal", val: "I: connected"})));
+            cljs.send({cmd: "direct", id: "", val:{cmd: "version_chk", val: "discord-auth"}});
+            cljs.send({cmd:"direct",val:{cmd:"type",val:"js"}});
+            cljs.send({cmd: "direct", val: {cmd: "ip", val: ip}});
+            cljs.send({cmd: "direct", id: "", val: "meower"});
+        });
+        cljs.on("closed", () => {
+            console.log(String(JSON.stringify({cmd: "internal", val: "I: disconnected"})));
+            if (document.getElementById("main-content").style.display != "none") {
+                document.getElementById("main-content").style.display = "none";
+                document.getElementById("error-content").style.display = "block";
+                document.getElementById("error-details").innerText = "Lost connection to CloudLink server - Please refresh to reconnect"
+                cljs.ws.close()
+            }
+        });
+    </script>
+    <script>
+        function ping() {
+            cljs.send({cmd: "ping", val: ""})
+        }
+        function login() {
+            document.getElementById("login-button").disabled = true;
+            document.getElementById("login-button").style.color = "orange";
+            document.getElementById("login-button").innerText = "Authenticating...";
+            cljs.send({cmd: "direct", val: {cmd: "authpswd", val: {username: document.getElementById("username-input").value, pswd: document.getElementById("password-input").value}}})
+        }
+        window.setInterval(ping, 10000)
+    </script>
+    <div id="scratch" class="logo" href="https://meower.org">meower <a id="scratch" class="link" href="/">home</a> <a id="scratch" class="link" href="https://app.meower.org">meower</a> <a id="scratch" class="link" href="https://wiki.meower.org">wikimeower</a> <a id="scratch" class="link" href="https://beta.meower.org">beta meower</a></div>
+    <br>
+    <div class="content" id="main-content"  style="display: block;">
+        <h2 style="color:orange;">Meower Discord Verification</h2>
+        <h4 style="color:orange;">All you need to do to access the Meower Discord is login with your Meower account here!<br>If you don't have a Meower account go to <a href="https://app.meower.org" target="_blank">app.meower.org</a> to create one.</h4>
+        <h4>Discord User: {{user}}</h4> 
+        <input type="text" id="username-input" placeholder="Username"/>
+        <br><br>
+        <input type="password" id="password-input" placeholder="Password"/>
+        <br><br>
+        <button id="login-button" onclick="login();">Login</button>
+    </div>
+    <div class="content" id="error-content" style="display: none;">
+        <h2 style="color:orange;">Verification Failed</h2>
+        <p><b>Me-owch! We ran into a problem while verifying, here's what we know:</b></p>
+        <p id="error-details"></p>
+    </div>
+    {% if error != None %}
+        <script>
+            document.getElementById("main-content").style.display = "none";
+            document.getElementById("error-content").style.display = "block";
+            document.getElementById("error-details").innerText = "{{error}}"
+            cljs.ws.close()
+        </script>
+    {% endif %}
+  </body>
+</html>
