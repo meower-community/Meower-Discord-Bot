@@ -99,10 +99,6 @@ async def verify(ctx):
         return await ctx.reply(":warning: You need to have direct messages on to be able to use this command.")
 
 @bot.command()
-async def ping(ctx):
-    await ctx.reply(f":ping_pong: Bot's ping to Discord API: {round(bot.latency, 1)}")
-
-@bot.command()
 async def meower(ctx, user=None):
     if user == None:
         return await ctx.reply("No Meower username was specified!")
