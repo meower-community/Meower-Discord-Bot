@@ -288,20 +288,6 @@ async def restart_meower_bot(interaction: Interaction):
     os.system("kill -KILL {0}".format(os.getpid()))
 
 
-@bot.slash_command(name="deploy", description="Deploy a page on Cloudflare pages.", guild_ids=MEOWER_DISCORD_GUILD)
-@has_permissions(administrator=True)
-async def deploy_cf_page(interaction: Interaction, project:str = SlashOption(name="project", choices={"meower-svelte": "svelte", "meower-vanilla": "vanilla", "streamilator": "streamilator", "meower-website": "website", "meower-assets": "assets"})):
-    await interaction.response.defer()
-    f = open("deploy_hooks.json", "r")
-    deploy_hooks = json.loads(f.read())
-    f.close()
-    resp = requests.post(deploy_hooks[project])
-    if resp.status_code == 200:
-        await interaction.followup.send(f":white_check_mark: Successfully started deploying **{project}**!")
-    else:
-        await interaction.followup.send(f":x: Failed to deploy **{project}**!")
-
-
 @bot.slash_command(name="warn", description="Applies a warning to a user.", guild_ids=MEOWER_DISCORD_GUILD)
 @has_permissions(administrator=True)
 async def add_warning(interaction: Interaction, user: nextcord.Member, reason: str):
