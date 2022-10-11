@@ -37,6 +37,13 @@ DISCORD_INTENTS = nextcord.Intents(messages=True, message_content=True, guilds=T
 
 # Database
 db = pymongo.MongoClient(DB_URI)[DB_NAME]
+db.users.links.create_index("discord")
+db.users.links.create_index("token")
+db.users.bridges.create_index("discord_channel")
+db.users.bridges.create_index("meower_channel")
+db.users.bans.create_index("discord")
+db.users.bans.create_index("meower")
+db.users.warnings.create_index("user")
 
 
 # Bot objects
@@ -419,19 +426,29 @@ async def create_bridge(
     
     # Check if the channel is currently bridged
     if db.bridges.find_one({"discord_channel": interaction.channel.id}) is not None:
-        return await interaction.followup.send("There is already a bridge setup, please delete it first by doing `/unbridge`.")
+        return await interaction.followup.send("There is already a bridge setup, please delete it first by doing </unbridge:1029299078477140039>.")
 
     # Bridge the channel
     webhook = await interaction.channel.create_webhook(name="Meower Bridge")
-    if channel == "home":
-        db.bridges.insert_one({"discord_channel": interaction.channel.id, "meower_channel": "home", "bridge_owner": interaction.user.id, "webhook": webhook.url, "ulist": True, "presence": False, "typing": True, "reactions": True})
-        await interaction.followup.send("Successfully bridged this channel to Meower home.")
-    elif channel == "livechat":
-        db.bridges.insert_one({"discord_channel": interaction.channel.id, "meower_channel": "livechat", "bridge_owner": interaction.user.id, "webhook": webhook.url, "ulist": False, "presence": True, "typing": True, "reactions": True})
-        await interaction.followup.send("Successfully bridged this channel to Meower livechat.")
+
+    bridge_data = {
+        "discord_channel": interaction.channel.id,
+        "meower_channel": channel,
+        "bridge_owner": interaction.user.id,
+        "webhook": webhook.url,
+        "ulist": True,
+        "presence": True,
+        "reactions": True
+    }
+
+    if channel != "group chat":
+        db.bridges.insert_one(bridge_data)
+        await interaction.followup.send(f"Successfully bridged this channel to Meower {channel}.")
     else:
         token = secrets.token_hex(4)
-        db.pending_chats.insert_one({"_id": token, "expires": (int(time.time()) + 900), "data": {"discord_channel": interaction.channel.id, "meower_channel": "livechat", "bridge_owner": interaction.user.id, "webhook": webhook.url, "ulist": False, "presence": True, "typing": True, "reactions": True}})
+
+        db.pending_chats.insert_one({"_id": token, "expires": (int(time.time()) + 900), "data": bridge_data})
+
         await interaction.followup.send(f"To link this channel to your Meower group chat, please add me to the group chat then send `@discord bridge {token}`.\n\nThe code will expire <t:{(int(time.time()) + 900)}:R>.")
 
 
@@ -545,12 +562,22 @@ def on_packet(data):
         post_data = bot.meower.pending_posts[data["listener"]]
         del bot.meower.pending_posts[data["listener"]]
         if data["val"] == "I:100 | OK":
-            bridge_to_discord(post_data["meower_channel"], post_data["user"], post_data["content"], exempt_channels=[str(post_data["discord_channel"])])
+            bridge_to_discord(post_data["meower_channel"], post_data["user"], post_data["content"], exempt_channels=[post_data["discord_channel"]])
             reaction = "%E2%9C%85"
+        elif data["val"] == "E:106 | Too many requests":
+            reaction = None
+
+            bot.meower.pending_posts[data["listener"]] = post_data
+
+            # Re-send post to Meower
+            if post_data["meower_channel"] == "home":
+                bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_home", "val": "{0}: {1}".format(post_data["user"], post_data["content"])}, "listener": data["listener"]})
+            else:
+                bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": post_data["meower_channel"], "p": "{0}: {1}".format(post_data["user"], post_data["content"])}}, "listener": data["listener"]})
         else:
             reaction = "%E2%9D%8C"
         
-        if post_data["add_reaction"]:
+        if post_data["add_reaction"] and (reaction is not None):
             bot.meower.pending_reactions.append("https://discord.com/api/v9/channels/{0}/messages/{1}/reactions/{2}/%40me?location=Message".format(post_data["discord_channel"], data["listener"], reaction))
 
     # User sent pvar
@@ -588,6 +615,7 @@ def on_packet(data):
                         bridge_data["data"]["meower_channel"] = data["post_origin"]
                         db.bridges.delete_many({"discord_channel": bridge_data["data"]["discord_channel"]})
                         db.bridges.insert_one(bridge_data["data"])
+                        alert_to_discord(data["post_origin"], ":link: Created Meower bridge to `{0}`!".format(data["post_origin"]))
                         bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "Successfully created bridge!"}}})
                 """ disabled due to getting chat owner is annoying to do right now
                 elif args[0] == "unbridge":
