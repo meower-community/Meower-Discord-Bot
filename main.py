@@ -38,13 +38,21 @@ STARTED = False
 
 # Database
 db = pymongo.MongoClient(DB_URI)[DB_NAME]
-db.links.create_index("discord")
-db.links.create_index("token")
-db.bridges.create_index("discord_channel")
-db.bridges.create_index("meower_channel")
-db.bans.create_index("discord")
-db.bans.create_index("meower")
-db.warnings.create_index("user")
+for index_name in ["discord", "token"]:
+    try:
+        db.links.create_index(index_name)
+    except:
+        pass
+for index_name in ["discord_channel", "meower_channel"]:
+    try:
+        db.bridges.create_index(index_name)
+    except:
+        pass
+for index_name in ["discord", "meower"]:
+    try:
+        db.bans.create_index(index_name)
+    except:
+        pass
 
 
 # Bot objects
