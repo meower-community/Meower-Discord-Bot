@@ -33,17 +33,18 @@ SOMEONE_STORYTIME_CHANNEL = int(os.environ["SOMEONE_STORYTIME_CHANNEL"])
 SOMEONE_STORYTIME_WEBHOOK = os.environ["SOMEONE_STORYTIME_WEBHOOK"]
 SOMEONE_STORYTIME_ROLE = os.environ["SOMEONE_STORYTIME_ROLE"]
 DISCORD_INTENTS = nextcord.Intents(messages=True, message_content=True, guilds=True, members=True)
+STARTED = False
 
 
 # Database
 db = pymongo.MongoClient(DB_URI)[DB_NAME]
-db.users.links.create_index("discord")
-db.users.links.create_index("token")
-db.users.bridges.create_index("discord_channel")
-db.users.bridges.create_index("meower_channel")
-db.users.bans.create_index("discord")
-db.users.bans.create_index("meower")
-db.users.warnings.create_index("user")
+db.links.create_index("discord")
+db.links.create_index("token")
+db.bridges.create_index("discord_channel")
+db.bridges.create_index("meower_channel")
+db.bans.create_index("discord")
+db.bans.create_index("meower")
+db.warnings.create_index("user")
 
 
 # Bot objects
@@ -51,13 +52,13 @@ bot = commands.Bot(command_prefix='<@926686033964314645>', intents=DISCORD_INTEN
 bot.meower = MeowerClient(MEOWER_USERNAME, MEOWER_PASSWORD, debug=True, auto_reconect=True, reconect_time=0)
 bot.meower_thread = Thread(target=bot.meower.start)
 bot.meower_thread.daemon = True
-bot.meower.prev_ulist = []
-bot.meower.ulist_time = {}
-bot.meower.pending_posts = {}
-bot.meower.pending_reactions =[]
-bot.meower.cached_pfps = {}
-bot.meower.meower_last_typed = {}
-bot.meower.discord_last_typed = {}
+bot.prev_ulist = []
+bot.ulist_time = {}
+bot.pending_posts = {}
+bot.pending_reactions =[]
+bot.cached_pfps = {}
+bot.meower_last_typed = {}
+bot.discord_last_typed = {}
 
 
 def attempt_webhook(webhook, data):
@@ -70,12 +71,12 @@ def attempt_webhook(webhook, data):
 def reaction_queue():
     # Queue for reactions because they are heavily ratelimited
     while True:
-        if len(bot.meower.pending_reactions) > 0:
-            resp = requests.put(bot.meower.pending_reactions[0], headers={"Authorization": "Bot {0}".format(DISCORD_TOKEN)})
+        if len(bot.pending_reactions) > 0:
+            resp = requests.put(bot.pending_reactions[0], headers={"Authorization": "Bot {0}".format(DISCORD_TOKEN)})
             if resp.status_code != 204:
                 time.sleep(3)
-                bot.meower.pending_reactions.append(bot.meower.pending_reactions[0])
-            del bot.meower.pending_reactions[0]
+                bot.pending_reactions.append(bot.pending_reactions[0])
+            del bot.pending_reactions[0]
 Thread(target=reaction_queue).start()
 
 
@@ -100,34 +101,34 @@ def bridge_to_discord(channel, user, post, exempt_channels=[]):
     post = utils.escape_markdown(post)
 
     # Get pfp data
-    if user not in bot.meower.cached_pfps:
+    if user not in bot.cached_pfps:
         resp = requests.get("https://api.meower.org/users/{0}".format(user)).json()
         if resp["error"] and (resp["type"] == "notFound"):
             # Unlink user if they don't exist anymore
             db.links.delete_one({"meower_username": user})
         elif resp["error"]:
-            bot.meower.cached_pfps[user] = 0
+            bot.cached_pfps[user] = 0
         else:
-            bot.meower.cached_pfps[user] = (resp["pfp_data"]-1)
+            bot.cached_pfps[user] = (resp["pfp_data"]-1)
 
             # Unlink user if their UUID has changed
-            userdata = db.links.find_one({"meower_username": user})
-            if (userdata != None) and (userdata["meower_uuid"] != resp["uuid"]):
+            link_data = db.links.find_one({"meower_username": user})
+            if (link_data != None) and (link_data["meower_uuid"] != resp["uuid"]):
                 db.links.delete_one({"meower_username": user})
 
     # Send bridged message to Discord
     for bridge in db.bridges.find({"meower_channel": channel}):
         if str(bridge["discord_channel"]) not in exempt_channels:
-            Thread(target=attempt_webhook, args=(bridge["webhook"], {"username": user, "avatar_url": "https://assets.meower.org/PFP/{0}.png".format(bot.meower.cached_pfps[user]), "content": post, "allowed_mentions": {"parse": []}},)).start()
+            Thread(target=attempt_webhook, args=(bridge["webhook"], {"username": user, "avatar_url": "https://assets.meower.org/PFP/{0}.png".format(bot.cached_pfps[user]), "content": post, "allowed_mentions": {"parse": []}},)).start()
 
 
 def typing_to_discord(channel, exempt_channels=[]):
     return # disabled for now
 
-    if (channel in bot.meower.meower_last_typed) and (bot.meower.meower_last_typed[channel] > (time.time() + 5)):
+    if (channel in bot.meower_last_typed) and (bot.meower_last_typed[channel] > (time.time() + 5)):
         return
     else:
-        bot.meower.meower_last_typed[channel] = time.time()
+        bot.meower_last_typed[channel] = time.time()
 
     bridges = list(db.bridges.find({"meower_channel": channel}))
     if len(bridges) == 0:
@@ -141,10 +142,10 @@ def typing_to_discord(channel, exempt_channels=[]):
 def typing_to_meower(channel):
     return # disabled for now
 
-    if (channel in bot.meower.discord_last_typed) and (bot.meower.discord_last_typed[channel] > (time.time() + 3)):
+    if (channel in bot.discord_last_typed) and (bot.discord_last_typed[channel] > (time.time() + 3)):
         return
     else:
-        bot.meower.discord_last_typed[channel] = time.time()
+        bot.discord_last_typed[channel] = time.time()
 
     bridge = db.bridges.find_one({"discord_channel": channel})
     if bridge is None:
@@ -161,6 +162,20 @@ def check_for_ban(meower_username):
     bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "get_user_ip", "val": meower_username}})
 
 
+def cache_chat(chatid):
+    if (chatid == "home") or (chatid == "livechat"):
+        return
+
+    def run():
+        chat_data = db.chats.find_one({"_id": chatid})
+        if (chat_data is None) or (chat_data["last_updated"] < (int(time.time()) + 3600)):
+            if chat_data is None:
+                db.chats.insert_one({"_id": chatid})
+
+            bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "get_chat_data", "val": chatid}})
+    Thread(target=run).start()  # Thread runner so it doesn't stop other code
+
+
 @bot.event
 async def on_ready():
     print(f"(Discord) Logged in as {bot.user}")
@@ -173,6 +188,7 @@ async def on_application_command_error(interaction, error):
         await interaction.response.defer()
     except:
         pass
+
     e = nextcord.Embed(title="MeOWch!", description="We ran into an error!\n\nThis is all we know: {0}".format(str(error)), color=0xfc0303)
     await interaction.followup.send(embed=e)
 
@@ -180,11 +196,12 @@ async def on_application_command_error(interaction, error):
 @bot.event
 async def on_member_join(user):
     if user.guild.id == 910201937352347648:
-        userdata = db.links.find_one({"discord": user.id})
-        if (userdata is not None) and (userdata["meower_username"] is not None):
+        link_data = db.links.find_one({"discord": user.id})
+
+        if (link_data is not None) and (link_data["meower_username"] is not None) and link_data["verified"]:
             verified_role = nextcord.utils.get(user.guild.roles, id=910203080371494982)
             await user.add_roles(verified_role)
-            await user.add_roles(verified_role, reason="Verified with Meower account {0}".format(userdata["meower_username"]))
+            await user.add_roles(verified_role, reason="Verified with Meower account {0}".format(link_data["meower_username"]))
         else:
             channel = user.guild.get_channel(939748856080511026)
             await channel.send("Hello {0}!\n\nTo be able to access the Meower Discord you need to link your Meower account to your Discord account.\nAll you need to do is run `/link` here to begin the process (this won't take any longer than a minute)!".format(user.mention))
@@ -204,22 +221,19 @@ async def on_message(msg):
             return
         
         # Check if the user has a Meower account linked
-        link_data = db.links.find_one({"discord": msg.author.id, "verified": True})
-        if (link_data is None) or (link_data["meower_username"] is None):
-            if db.bans.find_one({"discord": {"$all": [msg.author.id]}}) is None:
-                link_data = {"meower_username": f"(Discord) {msg.author.name}#{msg.author.discriminator}"}
-            else:
-                return
+        link_data = db.links.find_one({"discord": msg.author.id})
+        if (link_data is None) or (not link_data["verified"]):
+            return await msg.add_reaction("❌")
 
         # Convert reply to the author name
         if msg.reference is not None:
             replied_to_msg = await msg.channel.fetch_message(msg.reference.message_id)
             if replied_to_msg is not None:
-                userdata = db.links.find_one({"discord": replied_to_msg.author.id, "verified": True})
-                if userdata is None:
-                    msg.content = "@{0} {1}".format(f"(Discord) {replied_to_msg.author.name}#{replied_to_msg.author.discriminator}", msg.content)
+                tmp_link_data = db.links.find_one({"discord": replied_to_msg.author.id})
+                if (tmp_link_data is None) or (not tmp_link_data["verified"]):
+                    msg.content = "@{0} {1}".format(f"{replied_to_msg.author.name}#{replied_to_msg.author.discriminator}", msg.content)
                 else:
-                    msg.content = "@{0} {1}".format(userdata["meower_username"], msg.content)
+                    msg.content = "@{0} {1}".format(tmp_link_data["meower_username"], msg.content)
 
         # Convert all files to just the filename
         for file in msg.attachments:
@@ -230,7 +244,7 @@ async def on_message(msg):
                 pass
 
         # Save the message to a pending posts dictionary
-        bot.meower.pending_posts[str(msg.id)] = {"action": "post", "discord_channel": str(bridge_data["discord_channel"]), "meower_channel": bridge_data["meower_channel"], "user": link_data["meower_username"], "content": msg.clean_content, "add_reaction": bridge_data["reactions"]}
+        bot.pending_posts[str(msg.id)] = {"action": "post", "discord_channel": str(bridge_data["discord_channel"]), "meower_channel": bridge_data["meower_channel"], "user": link_data["meower_username"], "content": msg.clean_content, "add_reaction": bridge_data["reactions"]}
 
         # Send post to Meower
         if bridge_data["meower_channel"] == "home":
@@ -271,21 +285,19 @@ async def on_typing(channel, user, when):
 
 @bot.slash_command(name="dice", description="Roll a dice", guild_ids=MEOWER_DISCORD_GUILD)
 async def dice(interaction: Interaction, sides: int=6):
-    await interaction.response.defer()
     number = random.randint(1,sides)
-    await interaction.followup.send("The dice landed on **{0}**".format(str(number)))
+    await interaction.send("The dice landed on **{0}**".format(str(number)))
 
 
 @bot.slash_command(name="emoji", description="Sends a nitro only emoji.", guild_ids=MEOWER_DISCORD_GUILD)
 async def emoji(interaction: Interaction, emoji: str):
-    await interaction.response.defer()
     emoji = emoji.replace("meowy_", "")
     emoji = "meowy_" + emoji
     emoji = utils.get(interaction.guild.emojis, name=emoji)
     if emoji is not None:
-        await interaction.followup.send(emoji)
+        await interaction.send(emoji)
     else:
-        await interaction.followup.send("That emoji doesn't exist! Try one of these: `spin`, `planet`, `planets`.")
+        await interaction.send("That emoji doesn't exist! Try one of these: `spin`, `planet`, `planets`.")
 
 
 @bot.slash_command(name="restart", description="Restarts the Meower bot.", guild_ids=MEOWER_DISCORD_GUILD)
@@ -298,8 +310,6 @@ async def restart_meower_bot(interaction: Interaction):
 @bot.slash_command(name="warn", description="Applies a warning to a user.", guild_ids=MEOWER_DISCORD_GUILD)
 @has_permissions(administrator=True)
 async def add_warning(interaction: Interaction, user: nextcord.Member, reason: str):
-    await interaction.response.defer()
-
     # Get all warnings
     warnings = []
     index = db.warnings.find({"user": user.id})
@@ -315,45 +325,35 @@ async def add_warning(interaction: Interaction, user: nextcord.Member, reason: s
     try:
         await user.send(embed=e)
     except:
-        await interaction.followup.send("Successfully applied warning! *(but could not DM this user)*")
+        await interaction.send("Successfully applied warning! *(but could not DM this user)*", ephemera=True)
     else:
-        await interaction.followup.send("Successfully applied warning!")
+        await interaction.send("Successfully applied warning!", ephemeral=True)
 
 
 @bot.slash_command(name="removewarning", description="Removes a warning from a user.", guild_ids=MEOWER_DISCORD_GUILD)
 @has_permissions(administrator=True)
 async def remove_warning(interaction: Interaction, user: nextcord.Member, warning: int):
-    await interaction.response.defer()
-
     # Correct warning index
     warning -= 1
 
     # Get all warnings
-    warnings = []
-    index = db.warnings.find({"user": user.id})
-    for item in index:
-        warnings.append(item)
+    warnings = list(db.warnings.find({"user": user.id}))
 
     # Check if warning exists
     if warning >= len(warnings):
-        return await interaction.followup.send("That warning doesn't exist.")
+        return await interaction.send("That warning doesn't exist.", ephemeral=True)
 
     # Delete warning
     db.warnings.delete_one({"_id": warnings[warning]["_id"]})
 
     # Respond to moderator
-    await interaction.followup.send("Successfully removed warning.")
+    await interaction.send("Successfully removed warning.", ephemeral=True)
 
 
 @bot.slash_command(name="warnings", description="Displays all warnings from a user.", guild_ids=MEOWER_DISCORD_GUILD)
 async def view_warnings(interaction: Interaction, user: nextcord.Member):
-    await interaction.response.defer()
-
     # Get all warnings
-    warnings = []
-    index = db.warnings.find({"user": user.id})
-    for item in index:
-        warnings.append(item)
+    warnings = list(db.warnings.find({"user": user.id}))
 
     # Create embed
     e = nextcord.Embed(title="Warnings for {0}".format(user.id), color=0xfcba03)
@@ -364,7 +364,7 @@ async def view_warnings(interaction: Interaction, user: nextcord.Member):
         index += 1
 
     # Send embed
-    await interaction.followup.send(embed=e)
+    await interaction.send(embed=e, ephemeral=True)
 
 
 @bot.slash_command(name="ping", description="Returns bot's ping to Discord API.", force_global=True)
@@ -379,13 +379,11 @@ async def status(interaction: Interaction):
 
 @bot.slash_command(name="info", description="Returns info about a Meower account.", force_global=True)
 async def info(interaction: Interaction, username: str):
-    await interaction.response.defer()
-
     # Get user info from Meower API
     user_info = requests.get("https://api.meower.org/users/{0}".format(username)).json()
     if user_info["error"]:
         # User not found
-        return await interaction.followup.send("Sorry! That user doesn't seem to exist.")
+        return await interaction.send("Sorry! That user doesn't seem to exist.", ephemeral=False)
 
     # Create embed
     e = nextcord.Embed(title=user_info["_id"], color=nextcord.Color.orange())
@@ -397,7 +395,7 @@ async def info(interaction: Interaction, username: str):
     e.set_thumbnail(url="https://assets.meower.org/PFP/{0}.png".format(user_info["pfp_data"]))
 
     # Send embed
-    await interaction.followup.send(embed=e)
+    return await interaction.send(embed=e, ephemeral=True)
 
 
 @bot.slash_command(name="link", description="Links your Meower account to your Discord account.", force_global=True)
@@ -405,15 +403,14 @@ async def link_meower(interaction: Interaction):
     # Check for ban
     ban_entry = db.bans.find_one({"discord": {"$all": [interaction.user.id]}})
     if ban_entry is not None:
-        await interaction.send(":x: You are currently banned from linking your account to Meower Robot!\n\nReason: {0}".format(ban_entry.get("reason")), ephemeral=True)
-        return
+        return await interaction.send(f":x: You are currently banned from linking your account to Meower Robot!\n\nReason: {ban_entry['reason']}", ephemeral=True)
 
     # Create new link token
     link_token = secrets.token_urlsafe(32)
     db.links.insert_one({"discord": interaction.user.id, "meower_username": None, "meower_uuid": None, "token": link_token, "verified": False})
 
     # Send link token to user
-    await interaction.send("To link your Meower account, visit this link: https://meower.org/discord?token={0}\n\nThis link will expire <t:{1}:R>.".format(link_token, int(time.time())+600), ephemeral=True)
+    return await interaction.send("To link your Meower account, visit this link: https://meower.org/discord?token={0}\n\nThis link will expire <t:{1}:R>.".format(link_token, int(time.time())+600), ephemeral=True)
 
 
 @bot.slash_command(name="bridge", description="Bridge Meower home or a group chat.", force_global=True)
@@ -421,12 +418,10 @@ async def link_meower(interaction: Interaction):
 async def create_bridge(
     interaction: Interaction, 
     channel: str = SlashOption(name="channel", choices=["home", "livechat", "group chat"])
-):
-    await interaction.response.defer()
-    
+):    
     # Check if the channel is currently bridged
     if db.bridges.find_one({"discord_channel": interaction.channel.id}) is not None:
-        return await interaction.followup.send("There is already a bridge setup, please delete it first by doing </unbridge:1029299078477140039>.")
+        return await interaction.send("There is already a bridge setup, please delete it first by running </unbridge:1029299078477140039>.", ephemeral=True)
 
     # Bridge the channel
     webhook = await interaction.channel.create_webhook(name="Meower Bridge")
@@ -438,24 +433,29 @@ async def create_bridge(
         "webhook": webhook.url,
         "ulist": True,
         "presence": True,
-        "reactions": True
+        "reactions": True,
+        "public": False,
+        "created": int(time.time())
     }
 
     if channel != "group chat":
         db.bridges.insert_one(bridge_data)
-        await interaction.followup.send(f"Successfully bridged this channel to Meower {channel}.")
+        return await interaction.send(f"Successfully bridged this channel to **{channel}**.", ephemeral=True)
     else:
         token = secrets.token_hex(4)
 
         db.pending_chats.insert_one({"_id": token, "expires": (int(time.time()) + 900), "data": bridge_data})
 
-        await interaction.followup.send(f"To link this channel to your Meower group chat, please add me to the group chat then send `@discord bridge {token}`.\n\nThe code will expire <t:{(int(time.time()) + 900)}:R>.")
+        return await interaction.send(f"To link this channel to your Meower group chat, please add me to the group chat then send `@discord bridge {token}`.\n\nThe code will expire <t:{(int(time.time()) + 900)}:R>.", ephemeral=True)
 
 
 @bot.slash_command(name="unbridge", description="Unbridge channel from Meower.", force_global=True)
 @has_permissions(manage_channels=True)
 async def delete_bridge(interaction: Interaction):
-    await interaction.response.defer()
+    # Get bridge information
+    bridge_data = db.bridges.find_one({"discord_channel": interaction.channel.id})
+    if bridge_data is None:
+        return await interaction.send("There is no bridge setup for this channel!")
 
     # Delete any current webhooks
     webhooks = await interaction.channel.webhooks()
@@ -463,27 +463,28 @@ async def delete_bridge(interaction: Interaction):
         if webhook.user == bot.user:
             await webhook.delete()
     
-    # Delete bridges
-    db.bridges.delete_many({"discord_channel": interaction.channel.id})
+    # Delete bridge
+    db.bridges.delete_many({"_id": bridge_data["_id"]})
 
-    await interaction.followup.send("Successfully unbridged this channel from Meower.")
+    return await interaction.send(f"Successfully unbridged this channel from **{bridge_data.get('chat_name', bridge_data['meower_channel'])}**.", ephemeral=True)
 
 
 @bot.slash_command(name="settings", description="View/edit settings for Meower bridge.", force_global=True)
 @has_permissions(manage_channels=True)
 async def edit_settings(
     interaction: Interaction,
-    setting: str = SlashOption(name="toggle", choices=["ulist", "presence", "reactions"], required=False)
+    setting: str = SlashOption(name="toggle", choices=["ulist", "presence", "reactions", "public"], required=False)
 ):
     # Get bridge information
     bridge_data = db.bridges.find_one({"discord_channel": interaction.channel.id})
     if bridge_data is None:
-        return await interaction.send("There is no bridge setup for this channel! Set one up by running `/bridge`.")
+        return await interaction.send("There is no bridge setup for this channel! Set one up by running </bridge:992301233232691301>.")
 
     if setting is None:
         # View config
-        await interaction.send(embed=nextcord.Embed(title="Bridge Settings", description=f"""
-            Bridged to: `{bridge_data['meower_channel']}`
+        return await interaction.send(embed=nextcord.Embed(title="Bridge Settings", description=f"""
+            Bridged to: `{bridge_data.get('chat_name', bridge_data['meower_channel'])}`
+            Bridge created <t:{bridge_data['created']}:R>
 
 
             {':white_check_mark:' if bridge_data['ulist'] else ':x:'} **Ulist**: Alerts whenever someone logs in/out of Meower.
@@ -491,12 +492,35 @@ async def edit_settings(
             {':white_check_mark:' if bridge_data['presence'] else ':x:'} **Presence**: Alerts whenever someone joins/leaves the bridged group chat. (only for livechat and group chats)
 
             {':white_check_mark:' if bridge_data['reactions'] else ':x:'} **Reactions**: Adds a reaction to sent messages to indicate whether they successfully sent or there was an error sending.
+
+            {':white_check_mark:' if bridge_data['public'] else ':x:'} **Public**: Allow users within Discord to add themselves to the bridged group chat. (only for group chats)
         """, color=0x34a1eb), ephemeral=True)
     else:
         # Save setting
         db.bridges.update_one({"_id": bridge_data["_id"]}, {"$set": {setting: (not bridge_data[setting])}})
 
-        await interaction.send(f":white_check_mark: Successfully updated **{setting}** to **{str(not bridge_data[setting]).lower()}**!", ephemeral=True)
+        return await interaction.send(f":white_check_mark: Successfully updated **{setting}** to **{str(not bridge_data[setting]).lower()}**!", ephemeral=True)
+
+
+@bot.slash_command(name="join", description="Join the bridged group chat.", force_global=True)
+async def join_gc(interaction: Interaction):
+    # Get user information
+    link_data = db.links.find_one({"discord": interaction.user.id})
+    if link_data is None:
+        return await interaction.send("You do not have a Meower account linked! Please link one by running </link:962628201044127754>", ephemeral=True)
+    
+    # Get bridge information
+    bridge_data = db.bridges.find_one({"discord_channel": interaction.channel.id})
+    if bridge_data is None:
+        return await interaction.send("There is no bridge setup for this channel! Set one up by running </bridge:992301233232691301>.", ephemeral=True)
+    elif (bridge_data["meower_channel"] == "home") or (bridge_data["meower_channel"] == "livechat"):
+        return await interaction.send(f"You can only be added to a group chat! This channel is currently bridged to **{bridge_data['meower_channel']}**.", ephemeral=True)
+    elif not bridge_data["public"]:
+        return await interaction.send("Sorry, this bridge is not set to public!", ephemeral=True)
+    
+    # Add to group chat
+    bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "add_to_chat", "val": {"chatid": bridge_data["meower_channel"], "username": link_data["meower_username"]}}})
+    return await interaction.send(f"I have added you to **{bridge_data.get('chat_name', bridge_data['meower_channel'])}**!", ephemeral=True)
 
 
 @bot.slash_command(name="ulist", description="Gets the current online Meower users.", force_global=True)
@@ -504,7 +528,7 @@ async def meower_ulist(interaction: Interaction):
     ulist = "**There are currently {0} users online on Meower.**".format(len(bot.meower._wss.statedata["ulist"]["usernames"]))
     for user in bot.meower._wss.statedata["ulist"]["usernames"]:
         try:
-            ulist += "\n`{0}`  -  logged in <t:{1}:R>".format(user, bot.meower.ulist_time[user])
+            ulist += "\n`{0}`  -  logged in <t:{1}:R>".format(user, bot.ulist_time[user])
         except:
             pass
     await interaction.send(ulist, ephemeral=True)
@@ -521,23 +545,27 @@ def on_packet(data):
     if data["cmd"] == "ulist":
         # Get ulist
         ulist = bot.meower._wss.getUsernames()
-        if len(bot.meower.prev_ulist) == 0:
-            bot.meower.prev_ulist = ulist
-            for user in ulist:
-                bot.meower.ulist_time[user] = int(time.time())
+        if len(bot.prev_ulist) == 0:
+            if not STARTED:
+                bot.prev_ulist = ulist
+                for user in ulist:
+                    bot.ulist_time[user] = int(time.time())
+                STARTED = True
+            else:
+                os.system("kill -KILL {0}".format(os.getpid()))
 
         # Online checker
         for user in ulist:
-            if user not in bot.meower.prev_ulist:
-                bot.meower.ulist_time[user] = int(time.time())
+            if user not in bot.prev_ulist:
+                bot.ulist_time[user] = int(time.time())
                 alert_to_discord("ulist", ":green_circle: {0} is now online!".format(user))
         
         # Offline checker
-        for user in bot.meower.prev_ulist:
+        for user in bot.prev_ulist:
             if user not in ulist:
                 # Calculate time online
-                time_online = (int(time.time()) - bot.meower.ulist_time[user])
-                del bot.meower.ulist_time[user]
+                time_online = (int(time.time()) - bot.ulist_time[user])
+                del bot.ulist_time[user]
                 if time_online == 1:
                     time_online = "1 second"
                 elif time_online < 60:
@@ -555,19 +583,19 @@ def on_packet(data):
                 alert_to_discord("ulist", ":red_circle: {0} is now offline! {0} was online for {1}.".format(user, time_online))
         
         # Update previous ulist
-        bot.meower.prev_ulist = copy.copy(ulist)
+        bot.prev_ulist = copy.copy(ulist)
 
     # Bridge status
-    elif (data["cmd"] == "statuscode") and ("listener" in data) and (data["listener"] in bot.meower.pending_posts):
-        post_data = bot.meower.pending_posts[data["listener"]]
-        del bot.meower.pending_posts[data["listener"]]
+    elif (data["cmd"] == "statuscode") and ("listener" in data) and (data["listener"] in bot.pending_posts):
+        post_data = bot.pending_posts[data["listener"]]
+        del bot.pending_posts[data["listener"]]
         if data["val"] == "I:100 | OK":
             bridge_to_discord(post_data["meower_channel"], post_data["user"], post_data["content"], exempt_channels=[post_data["discord_channel"]])
             reaction = "%E2%9C%85"
         elif data["val"] == "E:106 | Too many requests":
             reaction = None
 
-            bot.meower.pending_posts[data["listener"]] = post_data
+            bot.pending_posts[data["listener"]] = post_data
 
             # Re-send post to Meower
             if post_data["meower_channel"] == "home":
@@ -578,7 +606,7 @@ def on_packet(data):
             reaction = "%E2%9D%8C"
         
         if post_data["add_reaction"] and (reaction is not None):
-            bot.meower.pending_reactions.append("https://discord.com/api/v9/channels/{0}/messages/{1}/reactions/{2}/%40me?location=Message".format(post_data["discord_channel"], data["listener"], reaction))
+            bot.pending_reactions.append("https://discord.com/api/v9/channels/{0}/messages/{1}/reactions/{2}/%40me?location=Message".format(post_data["discord_channel"], data["listener"], reaction))
 
     # User sent pvar
     elif data["cmd"] == "pvar":
@@ -589,6 +617,8 @@ def on_packet(data):
 
     # Commands and bridge
     elif "post_origin" in data["val"]:
+        cache_chat(data["val"]["post_origin"])
+
         data = data["val"]
         original_u = data["u"]
         original_p = data["p"]
@@ -602,7 +632,13 @@ def on_packet(data):
             args = data["p"].lower().split(" ")
             del args[0]
             
-            if data["post_origin"] != "home":
+            if (data["post_origin"] != "home") and (data["post_origin"] != "livechat"):
+                chat_data = db.chats.find_one({"_id": data["post_origin"]})
+                if (chat_data is None) or ("owner" not in chat_data):
+                    return bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "Sorry, I don't have enough information about this chat yet! Please try this command again in a few seconds."}}})
+                elif chat_data["owner"] != data["u"]:
+                    return bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "You must be the owner of the group chat to run bridge commands!"}}})
+
                 if args[0] == "bridge":
                     bridge_data = db.pending_chats.find_one({"_id": args[1]})
                     db.pending_chats.delete_one({"_id": args[1]})
@@ -617,15 +653,10 @@ def on_packet(data):
                         db.bridges.insert_one(bridge_data["data"])
                         alert_to_discord(data["post_origin"], ":link: Created Meower bridge to `{0}`!".format(data["post_origin"]))
                         bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "Successfully created bridge!"}}})
-                """ disabled due to getting chat owner is annoying to do right now
                 elif args[0] == "unbridge":
-                    if data["post_origin"] == "livechat":
-                        bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "You cannot unbridge livechat!"}}})
-                    else:
-                        alert_to_discord(data["post_origin"], ":link::x: Meower bridge to `{0}` has been destroyed by request of the chat owner!".format(data["post_origin"]))
-                        db.bridges.delete_many({"meower_channel": data["post_origin"]})
-                        bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "Successfully deleted all bridges to this group chat!"}}})
-                """
+                    alert_to_discord(data["post_origin"], ":link::x: Meower bridge to `{0}` has been destroyed by request of the chat owner!".format(data["post_origin"]))
+                    db.bridges.delete_many({"meower_channel": data["post_origin"]})
+                    bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "post_chat", "val": {"chatid": data["post_origin"], "p": "Successfully deleted all bridges to this group chat!"}}})
 
 
         # Moderator commands
@@ -652,6 +683,8 @@ def on_packet(data):
 
     # Chat state
     elif ("state" in data["val"]) and (data["val"]["u"] != MEOWER_USERNAME):
+        cache_chat(data["val"]["chatid"])
+
         if data["val"]["state"] == 0:
             alert_to_discord(data["val"]["chatid"], ":outbox_tray: {0} left the chat!".format(data["val"]["u"]), presence=True)
         elif data["val"]["state"] == 1:
@@ -674,27 +707,32 @@ def on_packet(data):
                     bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "alert", "val": {"username": user, "p": "Your account has been unlinked from your Discord account on Meower Robot due to one or more accounts on your IP address being banned. Reason: {0}".format(ban_entry["reason"])}}})
             db.links.delete_many({"meower_username": {"$im": [origin]}})
 
+    # Get chat data to be able to cache chat name, owner, and members
+    elif ("mode" in data["val"]) and (data["val"]["mode"] == "chat_data"):
+        db.chats.update_one({"_id": data["val"]["payload"]["chatid"]}, {"$set": {"name": data["val"]["payload"]["nickname"], "owner": data["val"]["payload"]["owner"], "members": len(data["val"]["payload"]["members"]), "last_updated": int(time.time())}})
+        db.bridges.update_many({"meower_channel": data["val"]["payload"]["chatid"]}, {"$set": {"chat_name": data["val"]["payload"]["nickname"]}})
+
 def handle_pvar(origin, name, val):
     if name == "discord":
-        userdata = db.links.find_one({"token": val})
-        if userdata is None:
+        link_data = db.links.find_one({"token": val})
+        if link_data is None:
             return "E:103 | IDNotFound"
         
-        requests.put("https://discord.com/api/v9/guilds/{0}/members/{1}/roles/{2}".format(MEOWER_DISCORD_GUILD[0], userdata["discord"], MEMBER_ROLE), headers={"Authorization": "Bot {0}".format(DISCORD_TOKEN)})
+        requests.put("https://discord.com/api/v9/guilds/{0}/members/{1}/roles/{2}".format(MEOWER_DISCORD_GUILD[0], link_data["discord"], MEMBER_ROLE), headers={"Authorization": "Bot {0}".format(DISCORD_TOKEN)})
         try:
-            userdata["meower_username"] = origin
-            userdata["meower_uuid"] = requests.get("https://api.meower.org/users/{0}".format(origin)).json()["uuid"]
-            userdata["verified"] = True
-            del userdata["token"]
+            link_data["meower_username"] = origin
+            link_data["meower_uuid"] = requests.get("https://api.meower.org/users/{0}".format(origin)).json()["uuid"]
+            link_data["verified"] = True
+            del link_data["token"]
 
-            db.links.delete_many({"$or": [{"discord": userdata["discord"]}, {"meower_username": origin}, {"meower_uuid": userdata["meower_uuid"]}]})
+            db.links.delete_many({"$or": [{"discord": link_data["discord"]}, {"meower_username": origin}, {"meower_uuid": link_data["meower_uuid"]}]})
 
             Thread(target=bot.meower._wss.sendPacket, args=({"cmd": "direct", "val": {"cmd": "get_user_ip", "val": origin}},))
             ban_entry = db.bans.find_one({"meower": {"$all": [origin]}})
             if ban_entry is not None:
                 bot.meower._wss.sendPacket({"cmd": "direct", "val": {"cmd": "alert", "val": {"username": origin, "p": "Your account has been unlinked from your Discord account on Meower Robot due to one or more accounts on your IP address being banned. Reason: {0}".format(ban_entry["reason"])}}})
             else:
-                db.links.insert_one(userdata)
+                db.links.insert_one(link_data)
 
             return "I:100 | OK"
         except:
