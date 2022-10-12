@@ -33,6 +33,7 @@ SOMEONE_STORYTIME_CHANNEL = int(os.environ["SOMEONE_STORYTIME_CHANNEL"])
 SOMEONE_STORYTIME_WEBHOOK = os.environ["SOMEONE_STORYTIME_WEBHOOK"]
 SOMEONE_STORYTIME_ROLE = os.environ["SOMEONE_STORYTIME_ROLE"]
 DISCORD_INTENTS = nextcord.Intents(messages=True, message_content=True, guilds=True, members=True)
+MEOWER_SERVER_URL = "wss://server.meower.org"
 STARTED = False
 
 
@@ -58,7 +59,9 @@ for index_name in ["discord", "meower"]:
 # Bot objects
 bot = commands.Bot(command_prefix='<@926686033964314645>', intents=DISCORD_INTENTS)
 bot.meower = MeowerClient(MEOWER_USERNAME, MEOWER_PASSWORD, debug=True, auto_reconect=True, reconect_time=0)
-bot.meower_thread = Thread(target=bot.meower.start)
+
+
+bot.meower_thread = Thread(target=bot.meower._wss.client, args=(MEOWER_SERVER_URL))
 bot.meower_thread.daemon = True
 bot.prev_ulist = []
 bot.ulist_time = {}
