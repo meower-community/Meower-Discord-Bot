@@ -20,20 +20,20 @@ dotenv.load_dotenv()
 
 
 # Constants
-DB_URI = os.environ["MONGODB_URI"]
-DB_NAME = os.environ["MONGODB_NAME"]
-MEOWER_USERNAME = os.environ["MEOWER_USERNAME"]
-MEOWER_PASSWORD = os.environ["MEOWER_PASSWORD"]
-LINK_SHORTENER_URL = os.environ["LINK_SHORTENER_URL"]
-LINK_SHORTENER_KEY = os.environ["LINK_SHORTENER_KEY"]
-DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
-MEOWER_DISCORD_GUILD = [int(os.environ["DISCORD_GUILD"])]
-MEMBER_ROLE = os.environ["MEMBER_ROLE"]
-SOMEONE_STORYTIME_CHANNEL = int(os.environ["SOMEONE_STORYTIME_CHANNEL"])
-SOMEONE_STORYTIME_WEBHOOK = os.environ["SOMEONE_STORYTIME_WEBHOOK"]
-SOMEONE_STORYTIME_ROLE = os.environ["SOMEONE_STORYTIME_ROLE"]
+DB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+DB_NAME = os.getenv("MONGODB_NAME", "meowerdiscordbot")
+MEOWER_USERNAME = os.getenv("MEOWER_USERNAME")
+MEOWER_PASSWORD = os.getenv("MEOWER_PASSWORD")
+LINK_SHORTENER_URL = os.getenv("LINK_SHORTENER_URL", "https://go.meower.org")
+LINK_SHORTENER_KEY = os.getenv("LINK_SHORTENER_KEY")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+MEOWER_DISCORD_GUILD = [int(os.getenv("DISCORD_GUILD"))]
+MEMBER_ROLE = os.getenv("MEMBER_ROLE")
+SOMEONE_STORYTIME_CHANNEL = int(os.getenv("SOMEONE_STORYTIME_CHANNEL"))
+SOMEONE_STORYTIME_WEBHOOK = os.getenv("SOMEONE_STORYTIME_WEBHOOK")
+SOMEONE_STORYTIME_ROLE = os.getenv("SOMEONE_STORYTIME_ROLE")
 DISCORD_INTENTS = nextcord.Intents(messages=True, message_content=True, guilds=True, members=True)
-MEOWER_SERVER_URL = "wss://server.meower.org"
+MEOWER_SERVER_URL = os.getenv("MEOWER_SERVER", "wss://server.meower.org")
 STARTED = False
 
 
