@@ -108,8 +108,6 @@ def alert_to_discord(channel, post, presence=False, typing=False):
 
 
 def bridge_to_discord(channel, user, post, exempt_channels=[]):
-    # Clean markdown
-    post = utils.escape_markdown(post)
 
     # Get pfp data
     if user not in bot.cached_pfps:
